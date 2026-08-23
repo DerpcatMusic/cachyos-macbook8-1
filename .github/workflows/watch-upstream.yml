@@ -39,7 +39,7 @@ jobs:
             -o "$UPSTREAM" "$PKGBUILD_URL"
 
           field() {
-            sed -n "s/^${1}=//p" "$UPSTREAM" | head -n1 | tr -d " \t\r\"'"
+            grep -m1 "^${1}=" "$UPSTREAM" | sed "s/^${1}=//" | tr -d " \t\r\"'" || true
           }
 
           MAJOR=$(field _major)
@@ -98,13 +98,16 @@ jobs:
           gh label create rebase --color FBCA04 --description "CachyOS kernel rebase needed" 2>/dev/null || true
 
           EXISTING=$(gh issue list --state open --limit 100 --json number,title \
-            --jq ".[] | select(.title == \"${TITLE}\") | .number" | head -n1)
+            --jq "[.[] | select(.title == \"${TITLE}\") | .number] | first")
+          if [ "$EXISTING" = "null" ]; then
+            EXISTING=
+          fi
 
           if [ -n "$EXISTING" ]; then
             gh issue comment "$EXISTING" --body "Watch job still sees CachyOS **${NEWVER}** vs pin **${PIN_VER}**. Run \`scripts/sync-from-cachy.sh\`."
             echo "Updated issue #${EXISTING}"
-          else
-            gh issue create --title "$TITLE" --label rebase --body "$BODY"
+          elif ! gh issue create --title "$TITLE" --label rebase --body "$BODY"; then
+            gh issue create --title "$TITLE" --body "$BODY"
           fi
 
   mainline:
@@ -153,11 +156,14 @@ jobs:
           gh label create upstream-merged --color 0E8A16 --description "Quirk merged upstream; drop local patch" 2>/dev/null || true
 
           EXISTING=$(gh issue list --state open --limit 100 --json number,title \
-            --jq ".[] | select(.title == \"${TITLE}\") | .number" | head -n1)
+            --jq "[.[] | select(.title == \"${TITLE}\") | .number] | first")
+          if [ "$EXISTING" = "null" ]; then
+            EXISTING=
+          fi
 
           if [ -n "$EXISTING" ]; then
             gh issue comment "$EXISTING" --body "Watch job still sees \`MacBook8,1\` in mainline \`spi-pxa2xx-pci.c\`. Drop \`0001-spi-pxa2xx-pci-disable-dma-macbook8-1.patch\`."
             echo "Updated issue #${EXISTING}"
-          else
-            gh issue create --title "$TITLE" --label upstream-merged --body "$BODY"
+          elif ! gh issue create --title "$TITLE" --label upstream-merged --body "$BODY"; then
+            gh issue create --title "$TITLE" --body "$BODY"
           fi
