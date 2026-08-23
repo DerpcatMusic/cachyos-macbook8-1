@@ -1,0 +1,10 @@
+src/
+pkg/
+*.pkg.tar.*
+*.log
+config-*
+PKGBUILD.upstream
+dist/
+.work/
+*.tar.gz
+*.tar.gz.asc

@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          NOTES="${RUNNER_TEMP}/release-notes.md"
+
+          {
+            echo "## linux-cachyos-mb81 ${TAG}"
+            echo
+            echo "This workflow does **not** compile the kernel. Attach locally built packages under \`dist/*.pkg.tar.zst\` if you want assets on this release."
+            echo
+            echo "Install attached packages with:"
+            echo
+            echo '```bash'
+            echo 'sudo pacman -U linux-cachyos-mb81-*.pkg.tar.zst linux-cachyos-mb81-headers-*.pkg.tar.zst'
+            echo 'sudo cp packaging/mb81-spi.conf /etc/mkinitcpio.conf.d/mb81-spi.conf'
+            echo 'sudo mkinitcpio -P'
+            echo '```'
+            echo
+            echo "Keep official \`linux-cachyos\` installed as a rescue kernel. Full instructions are in [README.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/README.md)."
+            echo
+
+            if [ -f README.md ]; then
+              echo "## From README"
+              echo
+              awk '
+                /^## Install/ {p=1}
+                /^## / && !/^## Install/ {if (p) exit}
+                p {print}
+              ' README.md
+            fi
+          } > "$NOTES"
+
+          shopt -s nullglob
+          assets=(dist/*.pkg.tar.zst)
+
+          if [ ${#assets[@]} -gt 0 ]; then
+            echo "Uploading ${#assets[@]} package(s) from dist/"
+            gh release create "$TAG" "${assets[@]}" \
+              --title "linux-cachyos-mb81 ${TAG}" \
+              --notes-file "$NOTES"
+          else
+            echo "No dist/*.pkg.tar.zst files; creating a notes-only release"
+            gh release create "$TAG" \
+              --title "linux-cachyos-mb81 ${TAG}" \
+              --notes-file "$NOTES"
+          fi

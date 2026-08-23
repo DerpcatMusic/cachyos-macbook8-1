@@ -1,0 +1,182 @@
+name: Check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  patch-applies:
+    name: patch-applies
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Apply SPI PIO patch to CachyOS source (fallback: torvalds)
+        env:
+          MAINLINE_SPI_URL: https://raw.githubusercontent.com/torvalds/linux/master/drivers/spi/spi-pxa2xx-pci.c
+        run: |
+          set -euo pipefail
+
+          PATCH="${GITHUB_WORKSPACE}/kernel/linux-cachyos-mb81/0001-spi-pxa2xx-pci-disable-dma-macbook8-1.patch"
+          test -f "$PATCH"
+
+          CACHYOS_SRC=$(sed -n 's/^CACHYOS_SRC=//p' kernel/upstream.pin | tr -d ' \t\r')
+          test -n "$CACHYOS_SRC"
+          TARBALL_URL="https://github.com/CachyOS/linux/releases/download/${CACHYOS_SRC}/${CACHYOS_SRC}.tar.gz"
+
+          SPI_REL="drivers/spi/spi-pxa2xx-pci.c"
+          WORK="${RUNNER_TEMP}/spi-check"
+          mkdir -p "$WORK"
+          cd "$WORK"
+
+          apply_patch() {
+            local root="$1"
+            (
+              cd "$root"
+              echo "dry-run in ${root}:"
+              patch -p1 --dry-run < "$PATCH"
+              echo "applying in ${root}:"
+              patch -p1 < "$PATCH"
+            )
+          }
+
+          kernel_root_from_spi() {
+            local spi_file="$1"
+            printf '%s\n' "${spi_file%/${SPI_REL}}"
+          }
+
+          used_fallback=0
+
+          echo "Downloading ${TARBALL_URL}"
+          if curl -L --fail --retry 3 --retry-delay 5 --show-error \
+            --connect-timeout 30 --max-time 600 \
+            -o "${CACHYOS_SRC}.tar.gz" "$TARBALL_URL"; then
+            echo "Extracting only ${SPI_REL}"
+            if tar -xf "${CACHYOS_SRC}.tar.gz" --wildcards "*/${SPI_REL}"; then
+              :
+            elif tar -xf "${CACHYOS_SRC}.tar.gz" --wildcards --no-anchored "$SPI_REL"; then
+              :
+            else
+              echo "Extract of ${SPI_REL} from CachyOS tarball failed; falling back to torvalds/linux"
+              used_fallback=1
+            fi
+          else
+            echo "CachyOS tarball download failed (404 or network); falling back to torvalds/linux"
+            used_fallback=1
+          fi
+
+          if [ "$used_fallback" -eq 0 ]; then
+            SPI_FILE=$(find . -path "*/${SPI_REL}" -type f | head -n1)
+            if [ -z "$SPI_FILE" ]; then
+              echo "Tarball downloaded but ${SPI_REL} was not found; falling back to torvalds/linux"
+              used_fallback=1
+            else
+              ROOT=$(kernel_root_from_spi "$SPI_FILE")
+              [ -n "$ROOT" ] || ROOT="."
+              echo "Applying patch against CachyOS tree at ${ROOT}"
+              apply_patch "$ROOT"
+              echo "Patch applied cleanly to ${CACHYOS_SRC}"
+              exit 0
+            fi
+          fi
+
+          echo "Fallback: fetching ${MAINLINE_SPI_URL}"
+          mkdir -p fake/"$(dirname "$SPI_REL")"
+          curl -L --fail --retry 3 --retry-delay 5 --show-error \
+            --connect-timeout 30 --max-time 120 \
+            -o "fake/${SPI_REL}" "$MAINLINE_SPI_URL"
+          echo "Applying patch against fake torvalds tree"
+          apply_patch fake
+          echo "Patch applied cleanly to torvalds/linux master fallback"
+
+  pkgbuild-sanity:
+    name: pkgbuild-sanity
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Sanity-check linux-cachyos-mb81 PKGBUILD
+        run: |
+          set -euo pipefail
+          PKG=kernel/linux-cachyos-mb81/PKGBUILD
+          test -f "$PKG"
+          fail=0
+
+          require() {
+            local pat="$1"
+            local msg="$2"
+            if ! grep -q -- "$pat" "$PKG"; then
+              echo "::error file=${PKG}::${msg}"
+              fail=1
+            else
+              echo "ok: ${msg}"
+            fi
+          }
+
+          require '_pkgsuffix=cachyos-mb81' 'PKGBUILD must set _pkgsuffix=cachyos-mb81'
+          require 'GENERIC_V3' 'PKGBUILD must mention GENERIC_V3'
+          require '0001-spi-pxa2xx-pci-disable-dma-macbook8-1.patch' 'PKGBUILD must list the SPI PIO patch'
+
+          if grep -F 'replaces=(linux-cachyos-lto)' "$PKG"; then
+            echo "::error file=${PKG}::PKGBUILD must not contain replaces=(linux-cachyos-lto)"
+            fail=1
+          fi
+          if grep -E 'replaces=\(linux-cachyos\)' "$PKG"; then
+            echo "::error file=${PKG}::PKGBUILD must not contain replaces=(linux-cachyos)"
+            fail=1
+          fi
+
+          if grep -F '_processor_opt:=}' "$PKG"; then
+            echo "::error file=${PKG}::empty _processor_opt default slipped back; must be GENERIC_V3"
+            fail=1
+          fi
+          if ! grep -F '_processor_opt:=GENERIC_V3' "$PKG"; then
+            echo "::error file=${PKG}::_processor_opt default must be GENERIC_V3"
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          echo "PKGBUILD sanity checks passed"
+
+  mainline-merged:
+    name: mainline-merged
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Warn if mainline already has the MacBook8,1 SPI quirk
+        env:
+          MAINLINE_SPI_URL: https://raw.githubusercontent.com/torvalds/linux/master/drivers/spi/spi-pxa2xx-pci.c
+        run: |
+          set -euo pipefail
+          SPI="${RUNNER_TEMP}/spi-pxa2xx-pci.c"
+          curl -L --fail --retry 3 --retry-delay 5 --show-error \
+            --connect-timeout 30 --max-time 120 \
+            -o "$SPI" "$MAINLINE_SPI_URL"
+
+          if grep -F 'MacBook8,1' "$SPI"; then
+            echo "::warning title=Mainline already has MacBook8,1::torvalds/linux drivers/spi/spi-pxa2xx-pci.c contains MacBook8,1. Drop kernel/linux-cachyos-mb81/0001-spi-pxa2xx-pci-disable-dma-macbook8-1.patch after a human confirms keyboard/trackpad on official linux-cachyos."
+            echo "=============================================================="
+            echo "WARNING: Mainline has MacBook8,1 SPI quirk — our patch can be dropped"
+            echo "Do not fail this job; a human must remove the patch."
+            echo "=============================================================="
+          else
+            echo "Mainline spi-pxa2xx-pci.c does not mention MacBook8,1; keep the local PIO patch."
+          fi

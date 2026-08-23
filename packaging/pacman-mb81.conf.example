@@ -1,0 +1,3 @@
+[mb81]
+SigLevel = Optional TrustAll
+Server = file:///home/derpcat/src/mb81-repo

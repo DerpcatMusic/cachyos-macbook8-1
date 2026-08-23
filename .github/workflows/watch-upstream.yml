@@ -1,0 +1,163 @@
+name: Watch upstream
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  cachyos:
+    name: CachyOS kernel version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Compare CachyOS PKGBUILD to kernel/upstream.pin
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_PKGBUILD_URL: https://raw.githubusercontent.com/CachyOS/linux-cachyos/master/linux-cachyos/PKGBUILD
+        run: |
+          set -euo pipefail
+
+          PIN_VER=$(sed -n 's/^CACHYOS_KERNEL_VER=//p' kernel/upstream.pin | tr -d ' \t\r')
+          PKGBUILD_URL=$(sed -n 's/^CACHYOS_PKGBUILD_URL=//p' kernel/upstream.pin | tr -d ' \t\r')
+          PKGBUILD_URL=${PKGBUILD_URL:-$DEFAULT_PKGBUILD_URL}
+          test -n "$PIN_VER"
+
+          UPSTREAM="${RUNNER_TEMP}/cachyos.PKGBUILD"
+          echo "Fetching ${PKGBUILD_URL}"
+          curl -L --fail --retry 3 --retry-delay 5 --show-error \
+            --connect-timeout 30 --max-time 120 \
+            -o "$UPSTREAM" "$PKGBUILD_URL"
+
+          field() {
+            sed -n "s/^${1}=//p" "$UPSTREAM" | head -n1 | tr -d " \t\r\"'"
+          }
+
+          MAJOR=$(field _major)
+          MINOR=$(field _minor)
+          PKGREL=$(field pkgrel)
+          PKGVER_RAW=$(field pkgver)
+
+          if [ -z "$PKGREL" ]; then
+            PKGREL=$(field _tagrel)
+          fi
+
+          if [ -n "$PKGVER_RAW" ] && ! [[ "$PKGVER_RAW" == *'$'* ]]; then
+            NEWVER="${PKGVER_RAW}-${PKGREL}"
+          elif [ -n "$MAJOR" ] && [ -n "$MINOR" ]; then
+            NEWVER="${MAJOR}.${MINOR}-${PKGREL}"
+          elif [ -n "$MAJOR" ]; then
+            NEWVER="${MAJOR}-${PKGREL}"
+          else
+            echo "::error::Could not parse _major/_minor/pkgver/pkgrel from CachyOS PKGBUILD"
+            exit 1
+          fi
+
+          echo "Pinned CACHYOS_KERNEL_VER=${PIN_VER}"
+          echo "Upstream linux-cachyos=${NEWVER} (_major=${MAJOR} _minor=${MINOR} pkgrel=${PKGREL} pkgver=${PKGVER_RAW})"
+
+          if [ "$NEWVER" = "$PIN_VER" ]; then
+            echo "Pin matches CachyOS; nothing to do."
+            exit 0
+          fi
+
+          TITLE="Rebase linux-cachyos-mb81 onto CachyOS ${NEWVER}"
+          BODY=$(cat <<EOF
+          CachyOS \`linux-cachyos\` is now **${NEWVER}**.
+
+          This tree is pinned to **${PIN_VER}** (\`kernel/upstream.pin\`).
+
+          Rebase with:
+
+          \`\`\`bash
+          ./scripts/sync-from-cachy.sh
+          \`\`\`
+
+          Review \`kernel/linux-cachyos-mb81/PKGBUILD\` and keep:
+
+          - \`_pkgsuffix=cachyos-mb81\`
+          - \`_processor_opt:=GENERIC_V3\`
+          - \`0001-spi-pxa2xx-pci-disable-dma-macbook8-1.patch\`
+          - no \`replaces=(linux-cachyos)\` / \`replaces=(linux-cachyos-lto)\`
+
+          Do not drop the SPI PIO patch unless mainline \`spi-pxa2xx-pci.c\` already contains \`MacBook8,1\`.
+
+          Opened by \`.github/workflows/watch-upstream.yml\`.
+          EOF
+          )
+
+          gh label create rebase --color FBCA04 --description "CachyOS kernel rebase needed" 2>/dev/null || true
+
+          EXISTING=$(gh issue list --state open --limit 100 --json number,title \
+            --jq ".[] | select(.title == \"${TITLE}\") | .number" | head -n1)
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "Watch job still sees CachyOS **${NEWVER}** vs pin **${PIN_VER}**. Run \`scripts/sync-from-cachy.sh\`."
+            echo "Updated issue #${EXISTING}"
+          else
+            gh issue create --title "$TITLE" --label rebase --body "$BODY"
+          fi
+
+  mainline:
+    name: Mainline SPI quirk
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Open issue if mainline has MacBook8,1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_SPI_URL: https://raw.githubusercontent.com/torvalds/linux/master/drivers/spi/spi-pxa2xx-pci.c
+        run: |
+          set -euo pipefail
+
+          SPI_URL=$(sed -n 's/^MAINLINE_SPI_PCI=//p' kernel/upstream.pin | tr -d ' \t\r')
+          SPI_URL=${SPI_URL:-$DEFAULT_SPI_URL}
+          SPI="${RUNNER_TEMP}/spi-pxa2xx-pci.c"
+
+          echo "Fetching ${SPI_URL}"
+          curl -L --fail --retry 3 --retry-delay 5 --show-error \
+            --connect-timeout 30 --max-time 120 \
+            -o "$SPI" "$SPI_URL"
+
+          if ! grep -F 'MacBook8,1' "$SPI"; then
+            echo "Mainline spi-pxa2xx-pci.c does not mention MacBook8,1."
+            exit 0
+          fi
+
+          TITLE="Mainline has MacBook8,1 SPI quirk — drop our patch"
+          BODY=$(cat <<EOF
+          Mainline \`drivers/spi/spi-pxa2xx-pci.c\` now contains \`MacBook8,1\`.
+
+          Our local patch \`kernel/linux-cachyos-mb81/0001-spi-pxa2xx-pci-disable-dma-macbook8-1.patch\` can be dropped. After verifying the built-in keyboard and trackpad, switch the MacBook back to official \`linux-cachyos\`.
+
+          Source: ${SPI_URL}
+
+          Opened by \`.github/workflows/watch-upstream.yml\`. A human must drop the patch.
+          EOF
+          )
+
+          gh label create upstream-merged --color 0E8A16 --description "Quirk merged upstream; drop local patch" 2>/dev/null || true
+
+          EXISTING=$(gh issue list --state open --limit 100 --json number,title \
+            --jq ".[] | select(.title == \"${TITLE}\") | .number" | head -n1)
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "Watch job still sees \`MacBook8,1\` in mainline \`spi-pxa2xx-pci.c\`. Drop \`0001-spi-pxa2xx-pci-disable-dma-macbook8-1.patch\`."
+            echo "Updated issue #${EXISTING}"
+          else
+            gh issue create --title "$TITLE" --label upstream-merged --body "$BODY"
+          fi

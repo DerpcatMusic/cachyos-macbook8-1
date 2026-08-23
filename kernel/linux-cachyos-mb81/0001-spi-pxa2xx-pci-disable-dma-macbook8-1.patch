@@ -1,0 +1,65 @@
+From: DerpcatMusic <derpcat@local>
+Subject: [PATCH] spi: pxa2xx: disable DMA for Apple MacBook8,1
+
+The MacBook8,1 (Early 2015 12") LPSS SPI controller at 00:15.4
+(8086:9ce6) has its DMA block held in reset by EFI
+(LPSS_PRIV_RESETS at BAR0+0x204 = 0). macOS sets
+AppleIntelLpssDmacChannel = 0; Windows Boot Camp leaves the DMA
+function driverless. Enabling DMA in Linux causes applespi
+transfers to time out (-110) and IRQ 21 never increments.
+
+Force PIO on a DMI match. No module parameter.
+
+This is a local hardware-enablement quirk, not an upstream
+submission. Drop it when mainline spi-pxa2xx-pci.c grows a
+MacBook8,1 match.
+
+Link: https://github.com/fourdollars/MacBook8-1
+Link: https://bugzilla.kernel.org/show_bug.cgi?id=108331
+---
+--- a/drivers/spi/spi-pxa2xx-pci.c
++++ b/drivers/spi/spi-pxa2xx-pci.c
+@@ -7,6 +7,7 @@
+  */
+ #include <linux/clk-provider.h>
+ #include <linux/device.h>
++#include <linux/dmi.h>
+ #include <linux/err.h>
+ #include <linux/module.h>
+ #include <linux/pci.h>
+@@ -59,6 +60,22 @@
+ static struct dw_dma_slave lpt0_tx_param = { .dst_id = 2 };
+ static struct dw_dma_slave lpt0_rx_param = { .src_id = 3 };
+ 
++static const struct dmi_system_id pxa2xx_spi_pci_apple_mb81[] = {
++	{
++		.ident = "Apple MacBook8,1",
++		.matches = {
++			DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
++			DMI_MATCH(DMI_PRODUCT_NAME, "MacBook8,1"),
++		},
++	},
++	{ }
++};
++
++static bool pxa2xx_spi_pci_is_macbook81(void)
++{
++	return dmi_check_system(pxa2xx_spi_pci_apple_mb81);
++}
++
+ static void pxa2xx_spi_pci_clk_unregister(void *clk)
+ {
+ 	clk_unregister(clk);
+@@ -167,6 +184,12 @@
+ 	c->dma_filter = lpss_dma_filter;
+ 	c->dma_burst_size = 1;
+ 	c->enable_dma = 1;
++
++	if (pxa2xx_spi_pci_is_macbook81()) {
++		dev_info(&dev->dev,
++			 "MacBook8,1: forcing SPI PIO (firmware holds LPSS DMA in reset)\n");
++		c->enable_dma = 0;
++	}
+ 	return 0;
+ }
+ 
