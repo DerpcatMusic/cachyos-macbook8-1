@@ -33,7 +33,8 @@ for p in "${pkgs[@]}"; do
     copied+=("$dest")
 done
 
-repo-add "$REPODIR/mb81.db.tar.zst" "${copied[@]}"
+cd "$REPODIR"
+repo-add mb81.db.tar.zst "${copied[@]##*/}"
 
 echo
 echo "Local repo ready at $REPODIR"
