@@ -18,7 +18,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Apply SPI PIO patch to CachyOS source (fallback: torvalds)
+      - name: "Apply SPI PIO patch to CachyOS source (fallback: torvalds)"
         env:
           MAINLINE_SPI_URL: https://raw.githubusercontent.com/torvalds/linux/master/drivers/spi/spi-pxa2xx-pci.c
         run: |
@@ -35,6 +35,11 @@ jobs:
           WORK="${RUNNER_TEMP}/spi-check"
           mkdir -p "$WORK"
           cd "$WORK"
+
+          if ! command -v patch >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y patch
+          fi
 
           apply_patch() {
             local root="$1"
@@ -59,7 +64,7 @@ jobs:
             --connect-timeout 30 --max-time 600 \
             -o "${CACHYOS_SRC}.tar.gz" "$TARBALL_URL"; then
             echo "Extracting only ${SPI_REL}"
-            if tar -xf "${CACHYOS_SRC}.tar.gz" --wildcards "*/${SPI_REL}"; then
+            if tar -xf "${CACHYOS_SRC}.tar.gz" --wildcards --wildcards-match-slash "*/${SPI_REL}"; then
               :
             elif tar -xf "${CACHYOS_SRC}.tar.gz" --wildcards --no-anchored "$SPI_REL"; then
               :
@@ -73,7 +78,7 @@ jobs:
           fi
 
           if [ "$used_fallback" -eq 0 ]; then
-            SPI_FILE=$(find . -path "*/${SPI_REL}" -type f | head -n1)
+            SPI_FILE=$(find . -path "*/${SPI_REL}" -type f -print -quit)
             if [ -z "$SPI_FILE" ]; then
               echo "Tarball downloaded but ${SPI_REL} was not found; falling back to torvalds/linux"
               used_fallback=1
