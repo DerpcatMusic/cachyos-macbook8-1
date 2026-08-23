@@ -42,7 +42,18 @@ Not in this kernel (on purpose):
 
 USB-C hub + USB keyboard for the first install. Stock CachyOS ISO is enough.
 
-## Install (on the MacBook)
+## Live ISO (keyboard and trackpad from USB boot)
+
+Flash the MacBook ISO. It boots `linux-cachyos-mb81` in the live session, so the
+internal keyboard and trackpad work in Calamares. The installer installs that
+same kernel as the default. Official `linux-cachyos` is not used.
+
+```bash
+./scripts/build-iso.sh
+# ISO lands in ~/src/mb81-iso-out/ and dist/
+```
+
+## Install (packages only, if you already have CachyOS)
 
 ```bash
 # copy the two packages over, then:
