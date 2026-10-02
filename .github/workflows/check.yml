@@ -2,19 +2,71 @@ name: Check
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      code: ${{ steps.paths.outputs.code }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: paths
+        name: Route documentation-only pull requests
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+          code = True
+          if os.environ["EVENT"] == "pull_request":
+              paths = subprocess.check_output(
+                  ["git", "diff", "--name-only", "-z", os.environ["BASE_SHA"] + "...HEAD"]
+              ).decode().split("\0")
+              paths = [p for p in paths if p]
+              code = not paths or any(not (p.endswith(".md") or p == "LICENSE") for p in paths)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"code={str(code).lower()}\n")
+          PY
+
+  shell-syntax:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Parse shell scripts without executing them
+        run: |
+          git ls-files -z '*.sh' '*PKGBUILD' | while IFS= read -r -d '' file; do
+            bash -n "$file"
+          done
+
   patch-applies:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     name: patch-applies
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
@@ -102,12 +154,14 @@ jobs:
           echo "Patch applied cleanly to torvalds/linux master fallback"
 
   pkgbuild-sanity:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     name: pkgbuild-sanity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
@@ -157,12 +211,14 @@ jobs:
           echo "PKGBUILD sanity checks passed"
 
   mainline-merged:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     name: mainline-merged
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
@@ -185,3 +241,29 @@ jobs:
           else
             echo "Mainline spi-pxa2xx-pci.c does not mention MacBook8,1; keep the local PIO patch."
           fi
+
+  ci:
+    name: CI
+    if: ${{ always() }}
+    needs: [changes, shell-syntax, patch-applies, pkgbuild-sanity, mainline-merged]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require expected results
+        env:
+          ROUTE: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          SHELL: ${{ needs.shell-syntax.result }}
+          PATCH: ${{ needs.patch-applies.result }}
+          PKG: ${{ needs.pkgbuild-sanity.result }}
+          MAINLINE: ${{ needs.mainline-merged.result }}
+        run: |
+          test "$ROUTE" = success
+          case "$CODE" in
+            true) expected=success ;;
+            false) expected=skipped ;;
+            *) exit 1 ;;
+          esac
+          for result in "$SHELL" "$PATCH" "$PKG" "$MAINLINE"; do
+            test "$result" = "$expected"
+          done
