@@ -5,7 +5,7 @@ CachyOS hardware enablement for **MacBook8,1** (12-inch Retina, Early 2015).
 <!-- derpcat-support -->
 <p align="center">
   <a href="https://www.patreon.com/derpcatmusic">
-    <img src=".github/support-derpcat.svg" alt="Donate on Patreon" width="440">
+    <img src=".github/support-derpcat.svg" alt="Donate on Patreon" width="480">
   </a>
 </p>
 <!-- /derpcat-support -->
